@@ -29,3 +29,6 @@
 # Copyright (c) 2021 ETH Zurich, Nikita Rudin
 
 from .on_policy_runner import OnPolicyRunner
+
+def build_runner(name, *args, **kwargs):
+    return globals()[name](*args, **kwargs)
