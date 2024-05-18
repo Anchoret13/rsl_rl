@@ -14,13 +14,13 @@ from rsl_rl.env import VecEnv
 
 from RNN import GRU
 
-class OnPolicyGRURuner:
+class OnPolicyGRURunner:
     def __init__(
             self,
             env:VecEnv,
             train_cfg,
             log_dir = None,
-            device = 'cpu'
+            device = 'cpu',
     ):
         self.cfg = train_cfg["runner"]
         self.alg_cfg = train_cfg["algorithm"]
@@ -31,9 +31,9 @@ class OnPolicyGRURuner:
 
         # GRU setup
         self.model_params = {
-            "input_size" : env.num_adapt,
+            "input_size" : env.cfg.env.num_adapt_input,
             "n_layer"    : 2,
-            "output_size": 10,  # TODO: currently it'fixed
+            "output_size": env.cfg.env.num_adapt_output,
             "hidden_size": 150
         }
 
@@ -59,7 +59,7 @@ class OnPolicyGRURuner:
         self.gru_optimizer = Adam(self.gru.parameters(), lr=0.001)
 
         # initialize observation buffer
-        self.obs_buffer = torch.zeros((env.num_envs, self.window_size, env.observation_space.shape[0]), dtype=torch.float32, device=self.device)
+        self.obs_buffer = torch.zeros((env.num_envs, self.window_size, env.num_obs), dtype=torch.float32, device=self.device)
         self.buffer_index = 0
 
         # Log
@@ -111,10 +111,13 @@ class OnPolicyGRURuner:
             with torch.inference_mode():
                 for i in range(self.num_steps_per_env):
                     #  GRU training
-                    gru_input = self.env.compute_adapt_input().to(self.device)
-                    gru_output = self.gru(gru_input)
+                    history = self.env.get_current_history().to(self.device) # NOTE: Modify your environment and make sure it has this function
+                    history.requires_grad_(True)
+                    gru_output = self.gru(history, None).to(self.device)
                     gru_target = self.env.compute_adapt_target().to(self.device) # TODO: double check this
+
                     gru_loss = loss_fn(gru_output, gru_target)
+                    
                     self.gru_optimizer.zero_grad()
                     gru_loss.backward()
                     self.gru_optimizer.step()

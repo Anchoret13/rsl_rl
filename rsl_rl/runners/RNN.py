@@ -77,6 +77,7 @@ class GRU(nn.Module):
         
         output, h_n = self.model(inputs, h_0)
         output = self.fc(output[:, -1, :])  # Shape of out: (batch_size, output_size)
+        print(output)
         return output
 
     
