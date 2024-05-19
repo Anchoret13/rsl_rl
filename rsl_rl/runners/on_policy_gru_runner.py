@@ -83,6 +83,11 @@ class OnPolicyGRURunner:
         else:
             end_part = self.obs_buffer[:, start_index, :]
 
+    def replace_dummy_with_gru(self, obs,gru_output):
+        obs_size_without_dummy = obs.shape[1] - gru_output.shape[1]
+        obs[:, obs_size_without_dummy:] = gru_output
+        return obs
+
     def learn(self, num_learning_iterations, init_at_random_ep_len=False):
         if self.log_dir is not None and self.writer is None:
             self.writer = SummaryWriter(log_dir=self.log_dir, flush_secs=10)
@@ -108,45 +113,44 @@ class OnPolicyGRURunner:
         for it in range(self.current_learning_iteration, tot_iter):
             start = time.time()
             # Rollout
-            with torch.inference_mode():
-                for i in range(self.num_steps_per_env):
-                    #  GRU training
-                    history = self.env.get_current_history().to(self.device) # NOTE: Modify your environment and make sure it has this function
-                    history.requires_grad_(True)
-                    gru_output = self.gru(history, None).to(self.device)
-                    gru_target = self.env.compute_adapt_target().to(self.device) # TODO: double check this
+            # with torch.inference_mode():
+            for i in range(self.num_steps_per_env):
+                #  GRU training
+                history = self.env.get_current_history().to(self.device) # NOTE: Modify your environment and make sure it has this function
+                gru_output = self.gru(history, None)
+                gru_output.requires_grad_(True)
+                gru_target = self.env.compute_adapt_target().to(self.device) # TODO: double check this
+                gru_loss = loss_fn(gru_output, gru_target)
+                
+                self.gru_optimizer.zero_grad()
+                gru_loss.backward()
+                self.gru_optimizer.step()
 
-                    gru_loss = loss_fn(gru_output, gru_target)
-                    
-                    self.gru_optimizer.zero_grad()
-                    gru_loss.backward()
-                    self.gru_optimizer.step()
+                obs = self.replace_dummy_with_gru(obs, gru_output)
+                
+                # Policy training
+                actions = self.alg.act(obs, critic_obs)
+                obs, privileged_obs, rewards, dones, infos = self.env.step(actions)
+                critic_obs = privileged_obs if privileged_obs is not None else obs
+                obs, critic_obs, rewards, dones = obs.to(self.device), critic_obs.to(self.device), rewards.to(self.device), dones.to(self.device)
+                self.alg.process_env_step(rewards, dones, infos)
 
-                    enhanced_obs = torch.cat((obs, gru_output), dim = 1)
-                    actions = self.alg.act(enhanced_obs, critic_obs)
-                    obs, privileged_obs, rewards, dones, infos = self.env.step(actions)
-                    critic_obs = privileged_obs if privileged_obs is not None else obs
-                    obs, critic_obs, rewards, dones = obs.to(self.device), critic_obs.to(self.device), rewards.to(self.device), dones.to(self.device)
-                    self.alg.process_env_step(rewards, dones, infos)
-
-                    if self.log_dir is not None:
-                        # Book Keeping
-                        if 'episode' in infos:
-                            ep_infos.append(infos['episode'])
-                        cur_reward_sum += rewards
-                        cur_episode_length += 1
-                        new_ids = (dones > 0).nonzero(as_tuple=False)
-                        rewbuffer.extend(cur_reward_sum[new_ids][:, 0].cpu().numpy().tolist())
-                        lenbuffer.extend(cur_episode_length[new_ids][:, 0].cpu().numpy().tolist())
-                        cur_reward_sum[new_ids] = 0
-                        cur_episode_length[new_ids] = 0
-
-                stop = time.time()
-                collection_time = stop - start
-
-                # Learning step
-                start = stop
-                self.alg.compute_returns(critic_obs)
+                if self.log_dir is not None:
+                    # Book Keeping
+                    if 'episode' in infos:
+                        ep_infos.append(infos['episode'])
+                    cur_reward_sum += rewards
+                    cur_episode_length += 1
+                    new_ids = (dones > 0).nonzero(as_tuple=False)
+                    rewbuffer.extend(cur_reward_sum[new_ids][:, 0].cpu().numpy().tolist())
+                    lenbuffer.extend(cur_episode_length[new_ids][:, 0].cpu().numpy().tolist())
+                    cur_reward_sum[new_ids] = 0
+                    cur_episode_length[new_ids] = 0
+            stop = time.time()
+            collection_time = stop - start
+            # Learning step
+            start = stop
+            self.alg.compute_returns(critic_obs)
             
             mean_value_loss, mean_surrogate_loss = self.alg.update()
             stop = time.time()
@@ -260,7 +264,7 @@ class OnPolicyGRURunner:
             self.update_obs_buffer(observation)
             gru_input = self.prepare_gru_input()
             gru_output = self.gru(gru_input)
-            enriched_obs = torch.cat((observation, gru_output), dim=1)
+            enriched_obs = self.replace_dummy_with_gru(observation, gru_output)
             return self.alg.actor_critic.act_inference(enriched_obs)
         
         return inference_policy
